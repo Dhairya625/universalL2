@@ -9,6 +9,7 @@ description = "Cross-platform, local-first L2 repository intelligence desktop so
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "PySide6>=6.8,<7",
+  "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +17,7 @@ build = ["pyinstaller>=6.11,<7"]
 
 [project.scripts]
 automate-desktop = "automate_desktop.app:main"
+automate-core = "automate_core.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

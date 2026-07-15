@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QFont
+import PySide6.QtWidgets
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
@@ -473,11 +474,14 @@ class MainWindow(QMainWindow):
         export_action = QAction("Export report…", self)
         export_action.setShortcut("Ctrl+Shift+E")
         export_action.triggered.connect(self.export_report)
+        export_tasks_action = QAction("Create GitHub Issues from Accepted Tasks...", self)
+        export_tasks_action.triggered.connect(self.create_github_issues)
         quit_action = QAction("Quit", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(QApplication.quit)
         file_menu.addAction(choose_action)
         file_menu.addAction(export_action)
+        file_menu.addAction(export_tasks_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -559,3 +563,50 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.statusBar().showMessage(f"Report exported to {path}")
+
+
+    def create_github_issues(self) -> None:
+        if not self.current_report:
+            QMessageBox.information(self, "No report", "Analyze a repository before creating issues.")
+            return
+
+        accepted_tasks = [task for task in self.current_report.proposed_tasks if task.review_state == TaskReviewState.ACCEPTED]
+        if not accepted_tasks:
+            QMessageBox.information(self, "No accepted tasks", "You must accept at least one task before creating issues.")
+            return
+
+        token, ok = PySide6.QtWidgets.QInputDialog.getText(self, "GitHub Personal Access Token", "Enter your GitHub PAT (with repo scope):", QLineEdit.Password)
+        if not ok or not token:
+            return
+
+        repo_slug, ok2 = PySide6.QtWidgets.QInputDialog.getText(self, "GitHub Repository", "Enter the repository slug (e.g., owner/repo):")
+        if not ok2 or not repo_slug:
+            return
+
+        import urllib.request
+        import json
+
+        created_count = 0
+        for task in accepted_tasks:
+            body = f"**Priority:** {task.priority.upper()} | **Complexity:** {task.complexity}\n\n**Objective:** {task.objective}\n\n**Affected Paths:**\n"
+            for p in task.affected_paths:
+                body += f"- `{p}`\n"
+            body += "\n**Acceptance Criteria:**\n"
+            for c in task.acceptance_criteria:
+                body += f"- [ ] {c}\n"
+
+            payload = json.dumps({"title": task.title, "body": body}).encode("utf-8")
+            req = urllib.request.Request(f"https://api.github.com/repos/{repo_slug}/issues", data=payload, method="POST")
+            req.add_header("Authorization", f"Bearer {token}")
+            req.add_header("Accept", "application/vnd.github.v3+json")
+
+            try:
+                with urllib.request.urlopen(req) as response:
+                    if response.status == 201:
+                        created_count += 1
+            except Exception as exc:
+                QMessageBox.critical(self, "GitHub API Error", f"Failed to create issue for task '{task.title}': {exc}")
+                return
+
+        QMessageBox.information(self, "Issues Created", f"Successfully created {created_count} GitHub issues.")
+        self.statusBar().showMessage(f"Created {created_count} GitHub issues")

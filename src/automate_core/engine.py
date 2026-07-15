@@ -6,6 +6,7 @@ import io
 import os
 import re
 import tokenize
+import xml.etree.ElementTree as ET
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +46,7 @@ def scan_repository(repository: str | Path) -> ScanReport:
     if not files:
         raise ScanError("No readable files were found in the selected repository")
     fingerprint = _content_fingerprint(files)
-    findings = [*_analyze_markers(root, files), *_analyze_test_gaps(files)]
+    findings = [*_analyze_markers(root, files), *_analyze_test_gaps(files), *_analyze_coverage(root)]
     findings.sort(key=lambda finding: (SEVERITY_ORDER[finding.severity], finding.category, finding.id))
     finding_tuple = tuple(findings)
     return ScanReport(
@@ -184,6 +185,67 @@ def _stub_finding(path: str, line: int, excerpt: str) -> Finding:
         "unknown", path, line, excerpt,
     )
 
+
+
+def _analyze_coverage(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
+
+    # Check for coverage.xml
+    coverage_xml = root / "coverage.xml"
+    if coverage_xml.is_file():
+        try:
+            tree = ET.parse(coverage_xml)
+            for cls in tree.findall(".//class"):
+                filename = cls.attrib.get("filename")
+                line_rate = float(cls.attrib.get("line-rate", 1.0))
+                if filename and line_rate < 0.6:  # Less than 60% coverage
+                    findings.append(
+                        _finding(
+                            "test_gap_candidate", "Low test coverage detected", "medium", 0.90,
+                            f"Coverage report indicates {line_rate:.0%} line coverage for this file.",
+                            "Low test coverage increases regression risk.",
+                            "Write tests to cover critical execution paths.",
+                            "medium", filename, 1, f"line-rate: {line_rate}"
+                        )
+                    )
+        except Exception:
+            pass
+
+    # Check for lcov.info
+    lcov_info = root / "lcov.info"
+    if lcov_info.is_file():
+        try:
+            current_file = None
+            lines_found = 0
+            lines_hit = 0
+            with open(lcov_info, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("SF:"):
+                        current_file = line[3:]
+                    elif line.startswith("LF:"):
+                        lines_found = int(line[3:])
+                    elif line.startswith("LH:"):
+                        lines_hit = int(line[3:])
+                    elif line == "end_of_record" and current_file and lines_found > 0:
+                        coverage = lines_hit / lines_found
+                        if coverage < 0.6:
+                            findings.append(
+                                _finding(
+                                    "test_gap_candidate", "Low test coverage detected", "medium", 0.90,
+                                    f"LCOV report indicates {coverage:.0%} line coverage for this file.",
+                                    "Low test coverage increases regression risk.",
+                                    "Write tests to cover critical execution paths.",
+                                    "medium", current_file, 1, f"coverage: {coverage:.2f}"
+                                )
+                            )
+                        current_file = None
+                        lines_found = 0
+                        lines_hit = 0
+        except Exception:
+            pass
+
+    return findings
 
 def _analyze_test_gaps(files: tuple[FileRecord, ...]) -> list[Finding]:
     supported = {"Python", "TypeScript", "JavaScript"}
