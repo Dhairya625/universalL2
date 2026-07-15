@@ -6,6 +6,8 @@ import io
 import os
 import re
 import tokenize
+import concurrent.futures
+import yaml
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,7 +20,7 @@ EXCLUDED_DIRECTORIES = {
     "coverage", ".next", ".cache", "__pycache__",
 }
 MAX_FILE_BYTES = 1_000_000
-SOURCE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+SOURCE_EXTENSIONS = {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs"}
 MANIFESTS = {
     "package.json", "pyproject.toml", "requirements.txt", "poetry.lock", "uv.lock",
     "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
@@ -41,11 +43,32 @@ def scan_repository(repository: str | Path) -> ScanReport:
     root = Path(repository).expanduser().resolve()
     if not root.is_dir():
         raise ScanError(f"Repository is not a readable directory: {root}")
-    files = _collect_files(root)
+
+    excluded_directories = set(EXCLUDED_DIRECTORIES)
+    marker_pattern = MARKER_PATTERN
+    max_file_bytes = MAX_FILE_BYTES
+
+    config_path = root / ".automate.yaml"
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+                if isinstance(config, dict):
+                    if "exclude_directories" in config and isinstance(config["exclude_directories"], list):
+                        excluded_directories.update(config["exclude_directories"])
+                    if "custom_markers" in config and isinstance(config["custom_markers"], list):
+                        markers = "|".join(config["custom_markers"])
+                        marker_pattern = re.compile(rf"\b({markers})\b", re.IGNORECASE)
+                    if "max_file_bytes" in config and isinstance(config["max_file_bytes"], int):
+                        max_file_bytes = config["max_file_bytes"]
+        except Exception:
+            pass
+
+    files = _collect_files(root, excluded_directories, max_file_bytes)
     if not files:
         raise ScanError("No readable files were found in the selected repository")
     fingerprint = _content_fingerprint(files)
-    findings = [*_analyze_markers(root, files), *_analyze_test_gaps(files)]
+    findings = [*_analyze_markers(root, files, marker_pattern), *_analyze_test_gaps(files), *_analyze_secrets(files, root)]
     findings.sort(key=lambda finding: (SEVERITY_ORDER[finding.severity], finding.category, finding.id))
     finding_tuple = tuple(findings)
     return ScanReport(
@@ -61,12 +84,12 @@ def scan_repository(repository: str | Path) -> ScanReport:
     )
 
 
-def _collect_files(root: Path) -> tuple[FileRecord, ...]:
+def _collect_files(root: Path, excluded_directories: set[str], max_file_bytes: int) -> tuple[FileRecord, ...]:
     records: list[FileRecord] = []
     for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
         directories[:] = sorted(
             directory for directory in directories
-            if directory not in EXCLUDED_DIRECTORIES and not (Path(current) / directory).is_symlink()
+            if directory not in excluded_directories and not (Path(current) / directory).is_symlink()
         )
         for filename in sorted(filenames):
             path = Path(current) / filename
@@ -74,7 +97,7 @@ def _collect_files(root: Path) -> tuple[FileRecord, ...]:
                 continue
             try:
                 size = path.stat().st_size
-                if size > MAX_FILE_BYTES:
+                if size > max_file_bytes:
                     continue
                 data = path.read_bytes()
             except (OSError, PermissionError):
@@ -110,30 +133,71 @@ def _categories(path: str, extension: str) -> set[str]:
     return result
 
 
-def _analyze_markers(root: Path, files: tuple[FileRecord, ...]) -> list[Finding]:
+
+
+
+SECRET_PATTERNS = {
+    "AWS Access Key": re.compile(r"(A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}"),
+    "Generic Secret": re.compile(r"(?i)(?:password|secret|api_key|apikey|token|auth_token|access_token)[\s:=]+(['\"][a-zA-Z0-9]{16,}['\"])"),
+}
+
+def _analyze_secrets(files: tuple[FileRecord, ...], root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for record in files:
-        if "source" not in record.categories or "test" in record.categories:
-            continue
-        if record.language not in {"Python", "TypeScript", "JavaScript"}:
+        if "source" not in record.categories and "manifest" not in record.categories and "ci" not in record.categories:
             continue
         try:
             text = (root / record.path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if record.language == "Python":
-            findings.extend(_analyze_python(record, text))
-        else:
-            findings.extend(_analyze_ecmascript(record, text))
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for secret_type, pattern in SECRET_PATTERNS.items():
+                if match := pattern.search(line):
+                    findings.append(
+                        _finding(
+                            "hardcoded_secret", f"Potential hardcoded {secret_type}", "critical", 0.85,
+                            "A static string matches the shape of a known credential or secret format.",
+                            "Hardcoded secrets can be easily extracted, leading to unauthorized access.",
+                            "Revoke the secret immediately and move it to a secure environment variable or secrets manager.",
+                            "medium", record.path, line_number, line.strip()
+                        )
+                    )
     return findings
 
 
-def _analyze_python(record: FileRecord, text: str) -> list[Finding]:
+def _analyze_single_file(record: FileRecord, root: Path, marker_pattern: re.Pattern) -> list[Finding]:
+    if "source" not in record.categories or "test" in record.categories:
+        return []
+    if record.language not in {"Python", "TypeScript", "JavaScript", "Go", "Rust"}:
+        return []
+    try:
+        text = (root / record.path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    if record.language == "Python":
+        return _analyze_python(record, text, marker_pattern)
+    elif record.language in {"TypeScript", "JavaScript"}:
+        return _analyze_ecmascript(record, text, marker_pattern)
+    elif record.language in {"Go", "Rust"}:
+        return _analyze_go_rust(record, text, marker_pattern)
+    return []
+
+def _analyze_markers(root: Path, files: tuple[FileRecord, ...], marker_pattern: re.Pattern) -> list[Finding]:
+    findings: list[Finding] = []
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(_analyze_single_file, record, root, marker_pattern) for record in files]
+        for future in concurrent.futures.as_completed(futures):
+            findings.extend(future.result())
+    return findings
+
+
+def _analyze_python(record: FileRecord, text: str, marker_pattern: re.Pattern) -> list[Finding]:
     findings: list[Finding] = []
     lines = text.splitlines()
     try:
         for token in tokenize.generate_tokens(io.StringIO(text).readline):
-            if token.type == tokenize.COMMENT and (marker := MARKER_PATTERN.search(token.string)):
+            if token.type == tokenize.COMMENT and (marker := marker_pattern.search(token.string)):
                 findings.append(_marker_finding(record.path, token.start[0], token.string, marker.group(1)))
     except (IndentationError, tokenize.TokenError):
         pass
@@ -152,11 +216,25 @@ def _analyze_python(record: FileRecord, text: str) -> list[Finding]:
     return findings
 
 
-def _analyze_ecmascript(record: FileRecord, text: str) -> list[Finding]:
+
+def _analyze_go_rust(record: FileRecord, text: str, marker_pattern: re.Pattern) -> list[Finding]:
     findings: list[Finding] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         comment = line.split("//", 1)[1] if "//" in line else None
-        if comment and (marker := MARKER_PATTERN.search(comment)):
+        if comment and (marker := marker_pattern.search(comment)):
+            findings.append(_marker_finding(record.path, line_number, line, marker.group(1)))
+        code = line.split("//", 1)[0]
+        if "panic" in code and re.search(r"not implemented|todo", code, re.IGNORECASE):
+            findings.append(_stub_finding(record.path, line_number, line))
+        if "unimplemented!" in code or "todo!" in code:
+            findings.append(_stub_finding(record.path, line_number, line))
+    return findings
+
+def _analyze_ecmascript(record: FileRecord, text: str, marker_pattern: re.Pattern) -> list[Finding]:
+    findings: list[Finding] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        comment = line.split("//", 1)[1] if "//" in line else None
+        if comment and (marker := marker_pattern.search(comment)):
             findings.append(_marker_finding(record.path, line_number, line, marker.group(1)))
         code = line.split("//", 1)[0]
         if "throw new Error" in code and re.search(r"not implemented|todo", code, re.IGNORECASE):
@@ -240,6 +318,7 @@ def _plan_tasks(findings: tuple[Finding, ...]) -> list[ProposedTask]:
         "implementation_marker": ("Review the marker in context.", "Complete or explicitly track the work.", "Run relevant tests."),
         "implementation_stub": ("Confirm or replace the stub.", "Add focused automated coverage.", "Remove reachable not-implemented failures."),
         "test_gap_candidate": ("Document indirect coverage or add tests.", "Cover success and failure behavior.", "Run the relevant test suite."),
+        "hardcoded_secret": ("Verify if the string is a real credential.", "Revoke the credential.", "Move configuration to environment variables."),
     }
     return [
         ProposedTask(

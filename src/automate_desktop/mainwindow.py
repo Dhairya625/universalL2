@@ -473,11 +473,14 @@ class MainWindow(QMainWindow):
         export_action = QAction("Export report…", self)
         export_action.setShortcut("Ctrl+Shift+E")
         export_action.triggered.connect(self.export_report)
+        export_tasks_action = QAction("Export accepted tasks to issues format...", self)
+        export_tasks_action.triggered.connect(self.export_accepted_tasks)
         quit_action = QAction("Quit", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(QApplication.quit)
         file_menu.addAction(choose_action)
         file_menu.addAction(export_action)
+        file_menu.addAction(export_tasks_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
 
@@ -559,3 +562,38 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Export failed", str(exc))
             return
         self.statusBar().showMessage(f"Report exported to {path}")
+
+
+    def export_accepted_tasks(self) -> None:
+        if not self.current_report:
+            QMessageBox.information(self, "No report", "Analyze a repository before exporting tasks.")
+            return
+
+        accepted_tasks = [task for task in self.current_report.proposed_tasks if task.review_state == TaskReviewState.ACCEPTED]
+        if not accepted_tasks:
+            QMessageBox.information(self, "No accepted tasks", "You must accept at least one task before exporting.")
+            return
+
+        suggested = f"automate-{self.current_report.repository_name}-tasks.md"
+        path, _ = QFileDialog.getSaveFileName(self, "Export Accepted Tasks", suggested, "Markdown files (*.md)")
+        if not path:
+            return
+        try:
+            lines = [f"# Accepted Tasks for {self.current_report.repository_name}\n"]
+            for task in accepted_tasks:
+                lines.append(f"## {task.title}")
+                lines.append(f"**Priority:** {task.priority.upper()} | **Complexity:** {task.complexity}")
+                lines.append(f"\n**Objective:** {task.objective}")
+                lines.append(f"\n**Affected Paths:**")
+                for p in task.affected_paths:
+                    lines.append(f"- `{p}`")
+                lines.append(f"\n**Acceptance Criteria:**")
+                for c in task.acceptance_criteria:
+                    lines.append(f"- [ ] {c}")
+                lines.append("\n---\n")
+
+            Path(path).write_text("\n".join(lines), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        self.statusBar().showMessage(f"Tasks exported to {path}")
