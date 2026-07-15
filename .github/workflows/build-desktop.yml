@@ -1,0 +1,37 @@
+name: Build cross-platform desktop releases
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            artifact: macOS
+          - os: windows-2022
+            artifact: Windows
+          - os: ubuntu-22.04
+            artifact: Linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install application and build tools
+        run: uv sync --extra build
+      - name: Run tests
+        run: uv run python -m unittest discover -s tests -v
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - name: Build native package
+        run: uv run python scripts/build_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Automate-${{ matrix.artifact }}
+          path: outputs/Automate-*

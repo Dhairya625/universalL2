@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automate-desktop"
+version = "0.2.0"
+description = "Cross-platform, local-first L2 repository intelligence desktop software"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "PySide6>=6.8,<7",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.11,<7"]
+
+[project.scripts]
+automate-desktop = "automate_desktop.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.uv]
+package = true
