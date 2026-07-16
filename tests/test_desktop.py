@@ -32,6 +32,10 @@ class DesktopSmokeTests(unittest.TestCase):
         window.developer_page.show_report(report)
         self.assertEqual(window.developer_page.queue.count(), 1)
         self.assertEqual(window.developer_page.metric_labels["queued"].text(), "1")
+        window._navigate(3)
+        self.assertEqual(window.breadcrumb.text(), "UniversalL2  /  Developer agent")
+        window.command_palette._filter("suggestions")
+        self.assertEqual(window.command_palette.results.count(), 1)
         window.close()
 
 

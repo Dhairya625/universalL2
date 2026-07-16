@@ -5,6 +5,8 @@ UniversalL2 Automate is local-first desktop software for repository analysis, de
 ## Current capabilities
 
 - Native desktop window and operating-system file picker
+- Linear-inspired dark engineering workspace with compact, information-dense views
+- Command menu with `Cmd/Ctrl+K` and direct workspace shortcuts with `Alt+1` through `Alt+5`
 - Read-only local repository analysis
 - Python, TypeScript, and JavaScript inventory and initial analyzers
 - Evidence, severity, confidence, and analyzer provenance
@@ -18,6 +20,8 @@ UniversalL2 Automate is local-first desktop software for repository analysis, de
 - External AI and network transfer disabled
 
 The developer panel is currently an orchestration and status foundation. Its execution adapter is intentionally disconnected: this version does not claim to edit code or run an AI developer. A future adapter can connect a self-hosted developer agent without changing the approval and persistence model.
+
+The interface follows Linear's interaction principles—speed, restrained hierarchy, dense work lists, focused details, and keyboard navigation—while retaining UniversalL2 branding and original desktop components.
 
 ## Development
 

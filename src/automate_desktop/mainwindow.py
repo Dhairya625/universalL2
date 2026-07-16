@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
@@ -48,8 +48,8 @@ def card() -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("Card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(18, 16, 18, 16)
-    layout.setSpacing(9)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(7)
     return frame, layout
 
 
@@ -57,7 +57,7 @@ def title_block(title: str, subtitle: str) -> QWidget:
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(4)
+    layout.setSpacing(2)
     heading = QLabel(title)
     heading.setObjectName("PageTitle")
     body = QLabel(subtitle)
@@ -76,8 +76,8 @@ class OverviewPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(18)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
 
         top = QHBoxLayout()
         top.addWidget(title_block("Repository intelligence", "Understand development gaps and convert evidence into reviewable engineering work."), 1)
@@ -204,8 +204,8 @@ class FindingsPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Findings", "Inspect repository evidence, confidence, and remediation guidance."))
         filter_row = QHBoxLayout()
         self.filter = QComboBox()
@@ -263,11 +263,11 @@ class FindingsPage(QWidget):
         )
         self.detail.setHtml(f"""
         <style>
-          body {{ font-family: -apple-system, Segoe UI, sans-serif; color: #172033; padding: 18px; }}
+          body {{ font-family: -apple-system, Segoe UI, sans-serif; color: #E4E4E7; padding: 14px; }}
           h1 {{ font-size: 25px; margin-bottom: 4px; }} h2 {{ font-size: 15px; margin-top: 24px; }}
           .badge {{ color: {SEVERITY_COLORS[finding.severity]}; font-weight: 700; font-size: 11px; }}
-          .muted {{ color: #64748B; }} .evidence {{ border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px; margin: 9px 0; }}
-          pre {{ background: #F1F5F9; border-radius: 6px; padding: 10px; white-space: pre-wrap; }} code {{ font-family: monospace; }}
+          .muted {{ color: #85858D; }} .evidence {{ border: 1px solid #343439; border-radius: 6px; padding: 10px; margin: 8px 0; }}
+          pre {{ background: #202023; color: #D4D4D8; border-radius: 5px; padding: 9px; white-space: pre-wrap; }} code {{ font-family: monospace; }}
         </style>
         <div class='badge'>{finding.severity.upper()} · {finding.confidence:.0%} CONFIDENCE</div>
         <h1>{html.escape(finding.title)}</h1><div class='muted'><code>{finding.id}</code></div>
@@ -279,7 +279,7 @@ class FindingsPage(QWidget):
 
     @staticmethod
     def _empty_html() -> str:
-        return "<div style='font-family:sans-serif;color:#64748B;padding:30px'><h2>No finding selected</h2><p>Analyze a repository or select a finding from the list.</p></div>"
+        return "<div style='font-family:sans-serif;color:#85858D;padding:24px'><h2>No finding selected</h2><p>Analyze a repository or select a finding from the list.</p></div>"
 
 
 class TasksPage(QWidget):
@@ -289,8 +289,8 @@ class TasksPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Suggestion workspace", "Review analysis-backed suggestions and explicitly approve work before it reaches the developer agent."))
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Priority", "Suggestion", "Affected paths", "Complexity", "Review", "Developer"])
@@ -320,7 +320,7 @@ class TasksPage(QWidget):
         detail_layout.addLayout(detail_top)
         self.detail = QTextBrowser()
         self.detail.setObjectName("DetailPanel")
-        self.detail.setHtml("<p style='color:#64748B'>Select a suggestion to inspect its objective and required actions.</p>")
+        self.detail.setHtml("<p style='color:#85858D'>Select a suggestion to inspect its objective and required actions.</p>")
         detail_layout.addWidget(self.detail)
         splitter.addWidget(detail_frame)
         splitter.setSizes([430, 240])
@@ -334,7 +334,7 @@ class TasksPage(QWidget):
         self.table.setRowCount(len(report.proposed_tasks))
         for row, task in enumerate(report.proposed_tasks):
             priority = QTableWidgetItem(task.priority.upper())
-            priority.setForeground(QColor("#4F46E5"))
+            priority.setForeground(QColor("#A99BFF"))
             task_item = QTableWidgetItem(f"{task.title}\n{task.objective}")
             task_item.setData(Qt.ItemDataRole.UserRole, task.id)
             paths = QTableWidgetItem("\n".join(task.affected_paths))
@@ -351,9 +351,9 @@ class TasksPage(QWidget):
             decision.currentTextChanged.connect(lambda text, task_id=task.id: self.decision_changed.emit(task_id, text.lower()))
             self.table.setCellWidget(row, 4, decision)
             agent_state = QTableWidgetItem(str(task.agent_state).replace("_", " ").title())
-            agent_state.setForeground(QColor("#0F766E" if str(task.agent_state) != AgentWorkState.UNASSIGNED else "#94A3B8"))
+            agent_state.setForeground(QColor("#8BE9D6" if str(task.agent_state) != AgentWorkState.UNASSIGNED else "#71717A"))
             self.table.setItem(row, 5, agent_state)
-            self.table.setRowHeight(row, 70)
+            self.table.setRowHeight(row, 54)
             if task.id == selected_id:
                 self.table.selectRow(row)
         if self.table.rowCount() and not self.table.selectedItems():
@@ -377,9 +377,9 @@ class TasksPage(QWidget):
         paths = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in task.affected_paths)
         criteria = "".join(f"<li>{html.escape(item)}</li>" for item in task.acceptance_criteria)
         self.detail.setHtml(f"""
-        <style>body {{ font-family: -apple-system, Segoe UI, sans-serif; color:#172033; }}
-        h2 {{ font-size:14px; margin-top:16px; }} .meta {{ color:#64748B; }}
-        code {{ background:#F1F5F9; padding:2px 5px; border-radius:4px; }}</style>
+        <style>body {{ font-family: -apple-system, Segoe UI, sans-serif; color:#E4E4E7; }}
+        h2 {{ font-size:13px; margin-top:15px; }} .meta {{ color:#85858D; }}
+        code {{ background:#28282D; color:#D4D4D8; padding:2px 5px; border-radius:4px; }}</style>
         <b>{html.escape(task.title)}</b><p class='meta'>{html.escape(task.objective)}</p>
         <h2>Required actions</h2><ol>{criteria}</ol><h2>Affected paths</h2><ul>{paths}</ul>
         """)
@@ -399,8 +399,8 @@ class DeveloperAgentPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Developer agent", "Track approved work, required actions, validation, and human approval in one operational panel."))
 
         notice = QLabel("Execution adapter: not connected  ·  This panel tracks controlled handoffs and status; it does not modify repository files.")
@@ -478,10 +478,10 @@ class DeveloperAgentPage(QWidget):
         activity = "".join(f"<li>{html.escape(self._format_activity(event))}</li>" for event in reversed(task.agent_activity)) or "<li>No activity recorded.</li>"
         state = str(task.agent_state).replace("_", " ").title()
         self.detail.setHtml(f"""
-        <style>body {{ font-family:-apple-system, Segoe UI, sans-serif; color:#172033; padding:8px; }}
-        .state {{ color:#0F766E; font-weight:700; font-size:11px; letter-spacing:1px; }}
+        <style>body {{ font-family:-apple-system, Segoe UI, sans-serif; color:#E4E4E7; padding:7px; }}
+        .state {{ color:#A99BFF; font-weight:700; font-size:10px; letter-spacing:1px; }}
         h1 {{ font-size:23px; margin:5px 0; }} h2 {{ font-size:14px; margin-top:20px; }}
-        .muted {{ color:#64748B; }} code {{ background:#F1F5F9; padding:2px 5px; border-radius:4px; }}</style>
+        .muted {{ color:#85858D; }} code {{ background:#28282D; color:#D4D4D8; padding:2px 5px; border-radius:4px; }}</style>
         <div class='state'>{html.escape(state.upper())}</div><h1>{html.escape(task.title)}</h1>
         <p class='muted'>{html.escape(task.objective)}</p><h2>Required actions</h2><ol>{criteria}</ol>
         <h2>Affected files</h2><ul>{paths}</ul><h2>Activity</h2><ul>{activity}</ul>
@@ -505,7 +505,7 @@ class DeveloperAgentPage(QWidget):
 
     def _show_empty(self) -> None:
         self.current_task_id = None
-        self.detail.setHtml("<div style='font-family:sans-serif;color:#64748B;padding:30px'><h2>Developer queue is empty</h2><p>Accept a suggestion and send it here when it is ready for controlled development.</p></div>")
+        self.detail.setHtml("<div style='font-family:sans-serif;color:#85858D;padding:24px'><h2>Developer queue is empty</h2><p>Accept a suggestion and send it here when it is ready for controlled development.</p></div>")
         self._clear_actions()
 
     @staticmethod
@@ -526,8 +526,8 @@ class HistoryPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Scan history", "Completed analyses are stored locally on this device."))
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(self._open)
@@ -580,12 +580,74 @@ class SettingsDialog(QDialog):
         layout.addStretch()
 
 
+class CommandPalette(QDialog):
+    page_requested = Signal(int)
+
+    ACTIONS = (
+        ("Go to Repository", "Connect and analyze a repository", 0),
+        ("Go to Analysis evidence", "Review findings and source evidence", 1),
+        ("Go to Suggestions", "Review and approve proposed work", 2),
+        ("Go to Developer agent", "Track approved development work", 3),
+        ("Go to Activity", "Open locally stored scan history", 4),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CommandPalette")
+        self.setWindowTitle("UniversalL2 command menu")
+        self.setModal(True)
+        self.setMinimumSize(560, 360)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setObjectName("CommandSearch")
+        self.search.setPlaceholderText("Search commands…")
+        self.search.textChanged.connect(self._filter)
+        self.search.returnPressed.connect(self._activate_current)
+        layout.addWidget(self.search)
+        self.results = QListWidget()
+        self.results.setObjectName("CommandResults")
+        self.results.itemActivated.connect(self._activate)
+        layout.addWidget(self.results, 1)
+        hint = QLabel("↑↓ navigate    ↵ open    esc close")
+        hint.setObjectName("CommandHint")
+        layout.addWidget(hint)
+        self._filter("")
+
+    def open_palette(self) -> None:
+        self.search.clear()
+        self.search.setFocus()
+        self.exec()
+
+    def _filter(self, query: str) -> None:
+        self.results.clear()
+        normalized = query.strip().lower()
+        for title, detail, page_index in self.ACTIONS:
+            if normalized and normalized not in f"{title} {detail}".lower():
+                continue
+            item = QListWidgetItem(f"{title}\n{detail}")
+            item.setData(Qt.ItemDataRole.UserRole, page_index)
+            self.results.addItem(item)
+        if self.results.count():
+            self.results.setCurrentRow(0)
+
+    def _activate_current(self) -> None:
+        self._activate(self.results.currentItem())
+
+    def _activate(self, item: QListWidgetItem | None) -> None:
+        if not item:
+            return
+        self.page_requested.emit(int(item.data(Qt.ItemDataRole.UserRole)))
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Automate")
-        self.resize(1180, 760)
-        self.setMinimumSize(980, 640)
+        self.resize(1280, 800)
+        self.setMinimumSize(1040, 680)
         self.repository_path: str | None = None
         self.current_report: ScanReport | None = None
         self.worker: ScanWorker | None = None
@@ -606,17 +668,20 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(244)
+        sidebar.setFixedWidth(226)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(16, 22, 16, 18)
-        side.setSpacing(8)
+        side.setContentsMargins(10, 12, 10, 12)
+        side.setSpacing(4)
         brand = QLabel("UniversalL2")
         brand.setObjectName("Brand")
-        subtitle = QLabel("ENGINEERING CONTROL ROOM")
+        subtitle = QLabel("Engineering workspace")
         subtitle.setObjectName("BrandSub")
         side.addWidget(brand)
         side.addWidget(subtitle)
-        side.addSpacing(24)
+        side.addSpacing(18)
+        views_label = QLabel("Workspace")
+        views_label.setObjectName("NavSection")
+        side.addWidget(views_label)
 
         self.pages = QStackedWidget()
         self.overview = OverviewPage()
@@ -657,7 +722,40 @@ class MainWindow(QMainWindow):
         privacy_layout.addWidget(privacy_body)
         side.addWidget(privacy)
         layout.addWidget(sidebar)
-        layout.addWidget(self.pages, 1)
+
+        workspace = QWidget()
+        workspace.setObjectName("Workspace")
+        workspace_layout = QVBoxLayout(workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        topbar = QFrame()
+        topbar.setObjectName("Topbar")
+        topbar.setFixedHeight(48)
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(18, 0, 14, 0)
+        self.breadcrumb = QLabel("UniversalL2  /  Repository")
+        self.breadcrumb.setObjectName("Breadcrumb")
+        topbar_layout.addWidget(self.breadcrumb)
+        topbar_layout.addStretch()
+        self.command_button = QPushButton("⌕  Search or jump to…    ⌘K")
+        self.command_button.setObjectName("CommandButton")
+        topbar_layout.addWidget(self.command_button)
+        workspace_layout.addWidget(topbar)
+        workspace_layout.addWidget(self.pages, 1)
+        layout.addWidget(workspace, 1)
+
+        self.command_palette = CommandPalette(self)
+        self.command_palette.page_requested.connect(self._navigate)
+        self.command_button.clicked.connect(self.command_palette.open_palette)
+        command_action = QAction("Search or jump to…", self)
+        command_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Meta+K")])
+        command_action.triggered.connect(self.command_palette.open_palette)
+        self.addAction(command_action)
+        for index in range(len(self.nav_buttons)):
+            shortcut = QAction(self)
+            shortcut.setShortcut(QKeySequence(f"Alt+{index + 1}"))
+            shortcut.triggered.connect(lambda checked=False, page_index=index: self._navigate(page_index))
+            self.addAction(shortcut)
 
         self.overview.choose_requested.connect(self.choose_repository)
         self.overview.scan_requested.connect(self.start_scan)
@@ -672,6 +770,8 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         if 0 <= index < len(self.nav_buttons):
             self.nav_buttons[index].setChecked(True)
+            title = ("Repository", "Analysis evidence", "Suggestions", "Developer agent", "Activity")[index]
+            self.breadcrumb.setText(f"UniversalL2  /  {title}")
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")

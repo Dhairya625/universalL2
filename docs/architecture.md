@@ -33,11 +33,14 @@ Suggestions begin as `proposed` and require an explicit human decision. An `acce
 
 ## Interface structure
 
+- **Workspace shell** — compact dark sidebar, breadcrumb command bar, `Cmd/Ctrl+K` command menu, and `Alt+1…5` direct navigation.
 - **Repository** — connection, scan controls, repository health, and summary metrics.
 - **Analysis Evidence** — finding severity, confidence, remediation, and source evidence.
 - **Suggestions** — human review, required actions, affected paths, and developer handoff.
 - **Developer Agent** — queue, current work details, operational state, validation, approval, and activity.
 - **Activity** — locally retained scan and workflow history.
+
+The visual system is Linear-inspired rather than a branded clone: it uses UniversalL2 naming, original symbols, native Qt controls, compact issue-style rows, restrained borders, and a distinct violet accent.
 
 ## Packaging
 
