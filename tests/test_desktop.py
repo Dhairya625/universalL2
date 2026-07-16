@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from automate_core import scan_repository
+from automate_core import TaskReviewState, handoff_to_developer, scan_repository
 from automate_desktop.mainwindow import MainWindow
 
 
@@ -26,6 +26,16 @@ class DesktopSmokeTests(unittest.TestCase):
         self.assertEqual(window.overview.metric_labels["findings"].text(), "3")
         self.assertEqual(window.findings_page.list.count(), 3)
         self.assertEqual(window.tasks_page.table.rowCount(), 3)
+        task = report.proposed_tasks[0]
+        task.review_state = TaskReviewState.ACCEPTED
+        handoff_to_developer(task)
+        window.developer_page.show_report(report)
+        self.assertEqual(window.developer_page.queue.count(), 1)
+        self.assertEqual(window.developer_page.metric_labels["queued"].text(), "1")
+        window._navigate(3)
+        self.assertEqual(window.breadcrumb.text(), "UniversalL2  /  Developer agent")
+        window.command_palette._filter("suggestions")
+        self.assertEqual(window.command_palette.results.count(), 1)
         window.close()
 
 

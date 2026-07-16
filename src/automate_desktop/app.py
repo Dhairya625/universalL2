@@ -12,8 +12,8 @@ from automate_desktop.theme import APP_STYLESHEET
 
 
 def main() -> int:
-    # Approved direction: one Qt desktop codebase for macOS, Windows, and Linux.
-    # It is a local application, not a browser UI or local web server.
+    # Approved direction: a Linear-inspired, keyboard-first Qt workspace for
+    # macOS, Windows, and Linux. It remains a local desktop application.
     QCoreApplication.setOrganizationName("Automate")
     QCoreApplication.setApplicationName("Automate")
     QCoreApplication.setApplicationVersion("0.2.0")

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QThread, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QFont
+from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog,
     QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget,
@@ -15,8 +15,11 @@ from PySide6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from automate_core import ScanReport, TaskReviewState, scan_repository
-from automate_core.models import Finding
+from automate_core import (
+    AgentWorkState, ScanReport, TaskReviewState, WorkflowError, handoff_to_developer,
+    next_agent_actions, scan_repository, transition_agent_work,
+)
+from automate_core.models import Finding, ProposedTask
 from automate_desktop.storage import HistoryStore
 
 
@@ -45,8 +48,8 @@ def card() -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("Card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(18, 16, 18, 16)
-    layout.setSpacing(9)
+    layout.setContentsMargins(14, 12, 14, 12)
+    layout.setSpacing(7)
     return frame, layout
 
 
@@ -54,7 +57,7 @@ def title_block(title: str, subtitle: str) -> QWidget:
     widget = QWidget()
     layout = QVBoxLayout(widget)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(4)
+    layout.setSpacing(2)
     heading = QLabel(title)
     heading.setObjectName("PageTitle")
     body = QLabel(subtitle)
@@ -73,8 +76,8 @@ class OverviewPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(18)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
 
         top = QHBoxLayout()
         top.addWidget(title_block("Repository intelligence", "Understand development gaps and convert evidence into reviewable engineering work."), 1)
@@ -201,8 +204,8 @@ class FindingsPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Findings", "Inspect repository evidence, confidence, and remediation guidance."))
         filter_row = QHBoxLayout()
         self.filter = QComboBox()
@@ -260,11 +263,11 @@ class FindingsPage(QWidget):
         )
         self.detail.setHtml(f"""
         <style>
-          body {{ font-family: -apple-system, Segoe UI, sans-serif; color: #172033; padding: 18px; }}
+          body {{ font-family: -apple-system, Segoe UI, sans-serif; color: #E4E4E7; padding: 14px; }}
           h1 {{ font-size: 25px; margin-bottom: 4px; }} h2 {{ font-size: 15px; margin-top: 24px; }}
           .badge {{ color: {SEVERITY_COLORS[finding.severity]}; font-weight: 700; font-size: 11px; }}
-          .muted {{ color: #64748B; }} .evidence {{ border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px; margin: 9px 0; }}
-          pre {{ background: #F1F5F9; border-radius: 6px; padding: 10px; white-space: pre-wrap; }} code {{ font-family: monospace; }}
+          .muted {{ color: #85858D; }} .evidence {{ border: 1px solid #343439; border-radius: 6px; padding: 10px; margin: 8px 0; }}
+          pre {{ background: #202023; color: #D4D4D8; border-radius: 5px; padding: 9px; white-space: pre-wrap; }} code {{ font-family: monospace; }}
         </style>
         <div class='badge'>{finding.severity.upper()} · {finding.confidence:.0%} CONFIDENCE</div>
         <h1>{html.escape(finding.title)}</h1><div class='muted'><code>{finding.id}</code></div>
@@ -276,20 +279,21 @@ class FindingsPage(QWidget):
 
     @staticmethod
     def _empty_html() -> str:
-        return "<div style='font-family:sans-serif;color:#64748B;padding:30px'><h2>No finding selected</h2><p>Analyze a repository or select a finding from the list.</p></div>"
+        return "<div style='font-family:sans-serif;color:#85858D;padding:24px'><h2>No finding selected</h2><p>Analyze a repository or select a finding from the list.</p></div>"
 
 
 class TasksPage(QWidget):
     decision_changed = Signal(str, str)
+    handoff_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
-        outer.addWidget(title_block("Proposed tasks", "Keep humans in control by accepting, rejecting, or deferring generated work."))
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Priority", "Task", "Affected paths", "Complexity", "Decision"])
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
+        outer.addWidget(title_block("Suggestion workspace", "Review analysis-backed suggestions and explicitly approve work before it reaches the developer agent."))
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Priority", "Suggestion", "Affected paths", "Complexity", "Review", "Developer"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -298,13 +302,39 @@ class TasksPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        outer.addWidget(self.table, 1)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.itemSelectionChanged.connect(self._show_selected)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.table)
+        detail_frame, detail_layout = card()
+        detail_top = QHBoxLayout()
+        detail_title = QLabel("Suggestion details")
+        detail_title.setObjectName("SectionTitle")
+        detail_top.addWidget(detail_title)
+        detail_top.addStretch()
+        self.handoff_button = QPushButton("Send to developer agent")
+        self.handoff_button.setObjectName("Primary")
+        self.handoff_button.setEnabled(False)
+        self.handoff_button.clicked.connect(self._request_handoff)
+        detail_top.addWidget(self.handoff_button)
+        detail_layout.addLayout(detail_top)
+        self.detail = QTextBrowser()
+        self.detail.setObjectName("DetailPanel")
+        self.detail.setHtml("<p style='color:#85858D'>Select a suggestion to inspect its objective and required actions.</p>")
+        detail_layout.addWidget(self.detail)
+        splitter.addWidget(detail_frame)
+        splitter.setSizes([430, 240])
+        outer.addWidget(splitter, 1)
+        self.tasks: list[ProposedTask] = []
+        self.current_task_id: str | None = None
 
     def show_report(self, report: ScanReport) -> None:
+        selected_id = self.current_task_id
+        self.tasks = report.proposed_tasks
         self.table.setRowCount(len(report.proposed_tasks))
         for row, task in enumerate(report.proposed_tasks):
             priority = QTableWidgetItem(task.priority.upper())
-            priority.setForeground(QColor("#4F46E5"))
+            priority.setForeground(QColor("#A99BFF"))
             task_item = QTableWidgetItem(f"{task.title}\n{task.objective}")
             task_item.setData(Qt.ItemDataRole.UserRole, task.id)
             paths = QTableWidgetItem("\n".join(task.affected_paths))
@@ -317,9 +347,177 @@ class TasksPage(QWidget):
             values = [state.value for state in TaskReviewState]
             decision.addItems([value.capitalize() for value in values])
             decision.setCurrentIndex(values.index(str(task.review_state)))
+            decision.setEnabled(str(task.agent_state) == AgentWorkState.UNASSIGNED)
             decision.currentTextChanged.connect(lambda text, task_id=task.id: self.decision_changed.emit(task_id, text.lower()))
             self.table.setCellWidget(row, 4, decision)
-            self.table.setRowHeight(row, 70)
+            agent_state = QTableWidgetItem(str(task.agent_state).replace("_", " ").title())
+            agent_state.setForeground(QColor("#8BE9D6" if str(task.agent_state) != AgentWorkState.UNASSIGNED else "#71717A"))
+            self.table.setItem(row, 5, agent_state)
+            self.table.setRowHeight(row, 54)
+            if task.id == selected_id:
+                self.table.selectRow(row)
+        if self.table.rowCount() and not self.table.selectedItems():
+            self.table.selectRow(0)
+
+    def _selected_task(self) -> ProposedTask | None:
+        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        if not rows:
+            return None
+        item = self.table.item(rows[0].row(), 1)
+        task_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return next((task for task in self.tasks if task.id == task_id), None)
+
+    def _show_selected(self) -> None:
+        task = self._selected_task()
+        if not task:
+            self.current_task_id = None
+            self.handoff_button.setEnabled(False)
+            return
+        self.current_task_id = task.id
+        paths = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in task.affected_paths)
+        criteria = "".join(f"<li>{html.escape(item)}</li>" for item in task.acceptance_criteria)
+        self.detail.setHtml(f"""
+        <style>body {{ font-family: -apple-system, Segoe UI, sans-serif; color:#E4E4E7; }}
+        h2 {{ font-size:13px; margin-top:15px; }} .meta {{ color:#85858D; }}
+        code {{ background:#28282D; color:#D4D4D8; padding:2px 5px; border-radius:4px; }}</style>
+        <b>{html.escape(task.title)}</b><p class='meta'>{html.escape(task.objective)}</p>
+        <h2>Required actions</h2><ol>{criteria}</ol><h2>Affected paths</h2><ul>{paths}</ul>
+        """)
+        can_handoff = str(task.review_state) == TaskReviewState.ACCEPTED and str(task.agent_state) == AgentWorkState.UNASSIGNED
+        self.handoff_button.setEnabled(can_handoff)
+        self.handoff_button.setText("Send to developer agent" if str(task.agent_state) == AgentWorkState.UNASSIGNED else "Already in developer workflow")
+
+    def _request_handoff(self) -> None:
+        task = self._selected_task()
+        if task:
+            self.handoff_requested.emit(task.id)
+
+
+class DeveloperAgentPage(QWidget):
+    state_requested = Signal(str, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
+        outer.addWidget(title_block("Developer agent", "Track approved work, required actions, validation, and human approval in one operational panel."))
+
+        notice = QLabel("Execution adapter: not connected  ·  This panel tracks controlled handoffs and status; it does not modify repository files.")
+        notice.setObjectName("Notice")
+        notice.setWordWrap(True)
+        outer.addWidget(notice)
+
+        metrics = QHBoxLayout()
+        self.metric_labels: dict[str, QLabel] = {}
+        for key, label in (("queued", "Queued"), ("active", "Active work"), ("approval", "Awaiting approval"), ("complete", "Complete")):
+            metric, metric_layout = card()
+            caption = QLabel(label)
+            caption.setObjectName("CardLabel")
+            value = QLabel("0")
+            value.setObjectName("MetricValue")
+            self.metric_labels[key] = value
+            metric_layout.addWidget(caption)
+            metric_layout.addWidget(value)
+            metrics.addWidget(metric)
+        outer.addLayout(metrics)
+
+        splitter = QSplitter()
+        self.queue = QListWidget()
+        self.queue.setMinimumWidth(330)
+        self.queue.setWordWrap(True)
+        self.queue.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.queue.currentItemChanged.connect(self._show_work)
+        splitter.addWidget(self.queue)
+        right, right_layout = card()
+        self.detail = QTextBrowser()
+        self.detail.setObjectName("DetailPanel")
+        right_layout.addWidget(self.detail, 1)
+        self.action_bar = QWidget()
+        self.action_layout = QHBoxLayout(self.action_bar)
+        self.action_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self.action_bar)
+        splitter.addWidget(right)
+        splitter.setSizes([360, 700])
+        outer.addWidget(splitter, 1)
+        self.tasks: list[ProposedTask] = []
+        self.current_task_id: str | None = None
+        self._show_empty()
+
+    def show_report(self, report: ScanReport) -> None:
+        selected_id = self.current_task_id
+        self.tasks = [task for task in report.proposed_tasks if str(task.agent_state) != AgentWorkState.UNASSIGNED]
+        self.queue.clear()
+        for task in self.tasks:
+            state = str(task.agent_state).replace("_", " ").upper()
+            item = QListWidgetItem(f"{state}\n{task.title}")
+            item.setData(Qt.ItemDataRole.UserRole, task.id)
+            self.queue.addItem(item)
+            if task.id == selected_id:
+                self.queue.setCurrentItem(item)
+        self.metric_labels["queued"].setText(str(sum(str(task.agent_state) == AgentWorkState.QUEUED for task in self.tasks)))
+        self.metric_labels["active"].setText(str(sum(str(task.agent_state) in {AgentWorkState.IN_PROGRESS, AgentWorkState.VALIDATION, AgentWorkState.BLOCKED} for task in self.tasks)))
+        self.metric_labels["approval"].setText(str(sum(str(task.agent_state) == AgentWorkState.AWAITING_APPROVAL for task in self.tasks)))
+        self.metric_labels["complete"].setText(str(sum(str(task.agent_state) == AgentWorkState.COMPLETE for task in self.tasks)))
+        if self.queue.count() and self.queue.currentRow() < 0:
+            self.queue.setCurrentRow(0)
+        elif not self.queue.count():
+            self._show_empty()
+
+    def _show_work(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if not current:
+            self._show_empty()
+            return
+        task_id = current.data(Qt.ItemDataRole.UserRole)
+        task = next((entry for entry in self.tasks if entry.id == task_id), None)
+        if not task:
+            return
+        self.current_task_id = task.id
+        criteria = "".join(f"<li>{html.escape(item)}</li>" for item in task.acceptance_criteria)
+        paths = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in task.affected_paths)
+        activity = "".join(f"<li>{html.escape(self._format_activity(event))}</li>" for event in reversed(task.agent_activity)) or "<li>No activity recorded.</li>"
+        state = str(task.agent_state).replace("_", " ").title()
+        self.detail.setHtml(f"""
+        <style>body {{ font-family:-apple-system, Segoe UI, sans-serif; color:#E4E4E7; padding:7px; }}
+        .state {{ color:#A99BFF; font-weight:700; font-size:10px; letter-spacing:1px; }}
+        h1 {{ font-size:23px; margin:5px 0; }} h2 {{ font-size:14px; margin-top:20px; }}
+        .muted {{ color:#85858D; }} code {{ background:#28282D; color:#D4D4D8; padding:2px 5px; border-radius:4px; }}</style>
+        <div class='state'>{html.escape(state.upper())}</div><h1>{html.escape(task.title)}</h1>
+        <p class='muted'>{html.escape(task.objective)}</p><h2>Required actions</h2><ol>{criteria}</ol>
+        <h2>Affected files</h2><ul>{paths}</ul><h2>Activity</h2><ul>{activity}</ul>
+        """)
+        self._set_actions(task)
+
+    def _set_actions(self, task: ProposedTask) -> None:
+        self._clear_actions()
+        self.action_layout.addStretch()
+        for label, target in next_agent_actions(task):
+            button = QPushButton(label)
+            button.setObjectName("Primary" if target in {AgentWorkState.IN_PROGRESS, AgentWorkState.VALIDATION, AgentWorkState.AWAITING_APPROVAL, AgentWorkState.COMPLETE} else "Secondary")
+            button.clicked.connect(lambda checked=False, task_id=task.id, state=str(target): self.state_requested.emit(task_id, state))
+            self.action_layout.addWidget(button)
+
+    def _clear_actions(self) -> None:
+        while self.action_layout.count():
+            item = self.action_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _show_empty(self) -> None:
+        self.current_task_id = None
+        self.detail.setHtml("<div style='font-family:sans-serif;color:#85858D;padding:24px'><h2>Developer queue is empty</h2><p>Accept a suggestion and send it here when it is ready for controlled development.</p></div>")
+        self._clear_actions()
+
+    @staticmethod
+    def _format_activity(event: str) -> str:
+        timestamp, separator, message = event.partition(" | ")
+        if not separator:
+            return event
+        try:
+            rendered = datetime.fromisoformat(timestamp).astimezone().strftime("%d %b %Y, %H:%M")
+        except ValueError:
+            rendered = timestamp
+        return f"{rendered} — {message}"
 
 
 class HistoryPage(QWidget):
@@ -328,8 +526,8 @@ class HistoryPage(QWidget):
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(28, 26, 28, 26)
-        outer.setSpacing(16)
+        outer.setContentsMargins(20, 18, 20, 20)
+        outer.setSpacing(12)
         outer.addWidget(title_block("Scan history", "Completed analyses are stored locally on this device."))
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(self._open)
@@ -382,12 +580,74 @@ class SettingsDialog(QDialog):
         layout.addStretch()
 
 
+class CommandPalette(QDialog):
+    page_requested = Signal(int)
+
+    ACTIONS = (
+        ("Go to Repository", "Connect and analyze a repository", 0),
+        ("Go to Analysis evidence", "Review findings and source evidence", 1),
+        ("Go to Suggestions", "Review and approve proposed work", 2),
+        ("Go to Developer agent", "Track approved development work", 3),
+        ("Go to Activity", "Open locally stored scan history", 4),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CommandPalette")
+        self.setWindowTitle("UniversalL2 command menu")
+        self.setModal(True)
+        self.setMinimumSize(560, 360)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+        self.search = QLineEdit()
+        self.search.setObjectName("CommandSearch")
+        self.search.setPlaceholderText("Search commands…")
+        self.search.textChanged.connect(self._filter)
+        self.search.returnPressed.connect(self._activate_current)
+        layout.addWidget(self.search)
+        self.results = QListWidget()
+        self.results.setObjectName("CommandResults")
+        self.results.itemActivated.connect(self._activate)
+        layout.addWidget(self.results, 1)
+        hint = QLabel("↑↓ navigate    ↵ open    esc close")
+        hint.setObjectName("CommandHint")
+        layout.addWidget(hint)
+        self._filter("")
+
+    def open_palette(self) -> None:
+        self.search.clear()
+        self.search.setFocus()
+        self.exec()
+
+    def _filter(self, query: str) -> None:
+        self.results.clear()
+        normalized = query.strip().lower()
+        for title, detail, page_index in self.ACTIONS:
+            if normalized and normalized not in f"{title} {detail}".lower():
+                continue
+            item = QListWidgetItem(f"{title}\n{detail}")
+            item.setData(Qt.ItemDataRole.UserRole, page_index)
+            self.results.addItem(item)
+        if self.results.count():
+            self.results.setCurrentRow(0)
+
+    def _activate_current(self) -> None:
+        self._activate(self.results.currentItem())
+
+    def _activate(self, item: QListWidgetItem | None) -> None:
+        if not item:
+            return
+        self.page_requested.emit(int(item.data(Qt.ItemDataRole.UserRole)))
+        self.accept()
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Automate")
-        self.resize(1180, 760)
-        self.setMinimumSize(980, 640)
+        self.resize(1280, 800)
+        self.setMinimumSize(1040, 680)
         self.repository_path: str | None = None
         self.current_report: ScanReport | None = None
         self.worker: ScanWorker | None = None
@@ -408,36 +668,42 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(226)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(16, 22, 16, 18)
-        side.setSpacing(8)
-        brand = QLabel("Automate")
+        side.setContentsMargins(10, 12, 10, 12)
+        side.setSpacing(4)
+        brand = QLabel("UniversalL2")
         brand.setObjectName("Brand")
-        subtitle = QLabel("L2 REPOSITORY INTELLIGENCE")
+        subtitle = QLabel("Engineering workspace")
         subtitle.setObjectName("BrandSub")
         side.addWidget(brand)
         side.addWidget(subtitle)
-        side.addSpacing(24)
+        side.addSpacing(18)
+        views_label = QLabel("Workspace")
+        views_label.setObjectName("NavSection")
+        side.addWidget(views_label)
 
         self.pages = QStackedWidget()
         self.overview = OverviewPage()
         self.findings_page = FindingsPage()
         self.tasks_page = TasksPage()
+        self.developer_page = DeveloperAgentPage()
         self.history_page = HistoryPage()
-        for page in (self.overview, self.findings_page, self.tasks_page, self.history_page):
+        for page in (self.overview, self.findings_page, self.tasks_page, self.developer_page, self.history_page):
             self.pages.addWidget(page)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for index, (label, symbol) in enumerate((("Overview", "▦"), ("Findings", "⚠"), ("Proposed tasks", "☑"), ("Scan history", "◴"))):
+        self.nav_buttons: list[QPushButton] = []
+        for index, (label, symbol) in enumerate((("Repository", "▦"), ("Analysis evidence", "◇"), ("Suggestions", "☑"), ("Developer agent", "⌘"), ("Activity", "◴"))):
             button = QPushButton(f"{symbol}   {label}")
             button.setObjectName("NavButton")
             button.setCheckable(True)
             if index == 0:
                 button.setChecked(True)
-            button.clicked.connect(lambda checked=False, page_index=index: self.pages.setCurrentIndex(page_index))
+            button.clicked.connect(lambda checked=False, page_index=index: self._navigate(page_index))
             group.addButton(button)
+            self.nav_buttons.append(button)
             side.addWidget(button)
         side.addStretch()
         settings = QPushButton("⚙   Settings")
@@ -456,14 +722,56 @@ class MainWindow(QMainWindow):
         privacy_layout.addWidget(privacy_body)
         side.addWidget(privacy)
         layout.addWidget(sidebar)
-        layout.addWidget(self.pages, 1)
+
+        workspace = QWidget()
+        workspace.setObjectName("Workspace")
+        workspace_layout = QVBoxLayout(workspace)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        topbar = QFrame()
+        topbar.setObjectName("Topbar")
+        topbar.setFixedHeight(48)
+        topbar_layout = QHBoxLayout(topbar)
+        topbar_layout.setContentsMargins(18, 0, 14, 0)
+        self.breadcrumb = QLabel("UniversalL2  /  Repository")
+        self.breadcrumb.setObjectName("Breadcrumb")
+        topbar_layout.addWidget(self.breadcrumb)
+        topbar_layout.addStretch()
+        self.command_button = QPushButton("⌕  Search or jump to…    ⌘K")
+        self.command_button.setObjectName("CommandButton")
+        topbar_layout.addWidget(self.command_button)
+        workspace_layout.addWidget(topbar)
+        workspace_layout.addWidget(self.pages, 1)
+        layout.addWidget(workspace, 1)
+
+        self.command_palette = CommandPalette(self)
+        self.command_palette.page_requested.connect(self._navigate)
+        self.command_button.clicked.connect(self.command_palette.open_palette)
+        command_action = QAction("Search or jump to…", self)
+        command_action.setShortcuts([QKeySequence("Ctrl+K"), QKeySequence("Meta+K")])
+        command_action.triggered.connect(self.command_palette.open_palette)
+        self.addAction(command_action)
+        for index in range(len(self.nav_buttons)):
+            shortcut = QAction(self)
+            shortcut.setShortcut(QKeySequence(f"Alt+{index + 1}"))
+            shortcut.triggered.connect(lambda checked=False, page_index=index: self._navigate(page_index))
+            self.addAction(shortcut)
 
         self.overview.choose_requested.connect(self.choose_repository)
         self.overview.scan_requested.connect(self.start_scan)
         self.overview.export_requested.connect(self.export_report)
         self.tasks_page.decision_changed.connect(self.update_task_decision)
+        self.tasks_page.handoff_requested.connect(self.handoff_task)
+        self.developer_page.state_requested.connect(self.update_agent_state)
         self.history_page.report_requested.connect(self.open_history_report)
         self.setStatusBar(QStatusBar())
+
+    def _navigate(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        if 0 <= index < len(self.nav_buttons):
+            self.nav_buttons[index].setChecked(True)
+            title = ("Repository", "Analysis evidence", "Suggestions", "Developer agent", "Activity")[index]
+            self.breadcrumb.setText(f"UniversalL2  /  {title}")
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -487,7 +795,7 @@ class MainWindow(QMainWindow):
             self.repository_path = directory
             self.current_report = None
             self.overview.set_repository(directory)
-            self.pages.setCurrentIndex(0)
+            self._navigate(0)
             self.statusBar().showMessage(f"Selected {directory}")
 
     def start_scan(self) -> None:
@@ -523,6 +831,7 @@ class MainWindow(QMainWindow):
         self.overview.show_report(report)
         self.findings_page.show_report(report)
         self.tasks_page.show_report(report)
+        self.developer_page.show_report(report)
         self.history_page.set_reports(self.history)
 
     def update_task_decision(self, task_id: str, state: str) -> None:
@@ -532,18 +841,57 @@ class MainWindow(QMainWindow):
         if not task:
             return
         task.review_state = state
+        self._persist_current_report()
+        self.overview.show_report(self.current_report)
+        self.tasks_page.show_report(self.current_report)
+        self.statusBar().showMessage(f"Task decision updated to {state}")
+
+    def handoff_task(self, task_id: str) -> None:
+        if not self.current_report:
+            return
+        task = next((item for item in self.current_report.proposed_tasks if item.id == task_id), None)
+        if not task:
+            return
+        try:
+            handoff_to_developer(task)
+        except WorkflowError as exc:
+            QMessageBox.warning(self, "Handoff unavailable", str(exc))
+            return
+        self._persist_current_report()
+        self.tasks_page.show_report(self.current_report)
+        self.developer_page.show_report(self.current_report)
+        self._navigate(3)
+        self.statusBar().showMessage("Approved suggestion added to the developer queue")
+
+    def update_agent_state(self, task_id: str, state: str) -> None:
+        if not self.current_report:
+            return
+        task = next((item for item in self.current_report.proposed_tasks if item.id == task_id), None)
+        if not task:
+            return
+        try:
+            transition_agent_work(task, state)
+        except WorkflowError as exc:
+            QMessageBox.warning(self, "Workflow transition unavailable", str(exc))
+            return
+        self._persist_current_report()
+        self.tasks_page.show_report(self.current_report)
+        self.developer_page.show_report(self.current_report)
+        self.statusBar().showMessage(f"Developer workflow updated to {state.replace('_', ' ')}")
+
+    def _persist_current_report(self) -> None:
+        if not self.current_report:
+            return
         self.store.save(self.current_report)
         for index, report in enumerate(self.history):
             if report.scan_id == self.current_report.scan_id:
                 self.history[index] = self.current_report
                 break
-        self.overview.show_report(self.current_report)
-        self.statusBar().showMessage(f"Task decision updated to {state}")
 
     def open_history_report(self, report: ScanReport) -> None:
         self.current_report = report
         self._show_report(report)
-        self.pages.setCurrentIndex(0)
+        self._navigate(0)
 
     def export_report(self) -> None:
         if not self.current_report:

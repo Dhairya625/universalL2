@@ -48,9 +48,13 @@ class CoreScannerTests(unittest.TestCase):
     def test_report_round_trip_preserves_review_state(self) -> None:
         report = scan_repository(self.root)
         report.proposed_tasks[0].review_state = "accepted"
+        report.proposed_tasks[0].agent_state = "queued"
+        report.proposed_tasks[0].agent_activity = ("2026-07-16 | queued",)
         restored = ScanReport.from_dict(json.loads(json.dumps(report.to_dict())))
         self.assertEqual(restored.scan_id, report.scan_id)
         self.assertEqual(restored.proposed_tasks[0].review_state, "accepted")
+        self.assertEqual(restored.proposed_tasks[0].agent_state, "queued")
+        self.assertEqual(restored.proposed_tasks[0].agent_activity, ("2026-07-16 | queued",))
 
 
 if __name__ == "__main__":

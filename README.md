@@ -1,17 +1,27 @@
 # Automate Desktop
 
-Automate is local-first desktop software for repository analysis, development-gap detection, and human-reviewed task planning. The official application uses Qt 6/PySide6 and one shared source codebase for macOS, Windows, and Linux. It is not a browser application and does not start a local web server.
+UniversalL2 Automate is local-first desktop software for repository analysis, development-gap detection, human-reviewed suggestions, and controlled developer-agent handoff. The official application uses Qt 6/PySide6 and one shared source codebase for macOS, Windows, and Linux. It is not a browser application and does not start a local web server.
 
 ## Current capabilities
 
 - Native desktop window and operating-system file picker
+- Linear-inspired dark engineering workspace with compact, information-dense views
+- Command menu with `Cmd/Ctrl+K` and direct workspace shortcuts with `Alt+1` through `Alt+5`
 - Read-only local repository analysis
 - Python, TypeScript, and JavaScript inventory and initial analyzers
 - Evidence, severity, confidence, and analyzer provenance
 - Deterministic proposed tasks with acceptance criteria
 - Human decisions: proposed, accepted, rejected, or deferred
+- Professional suggestion workspace with objectives, affected files, and required actions
+- Controlled handoff of accepted suggestions to a dedicated developer-agent queue
+- Developer work stages: queued, in progress, validation, awaiting approval, complete, or blocked
+- Locally recorded developer workflow activity and mandatory approval gates
 - Local scan history and JSON export
 - External AI and network transfer disabled
+
+The developer panel is currently an orchestration and status foundation. Its execution adapter is intentionally disconnected: this version does not claim to edit code or run an AI developer. A future adapter can connect a self-hosted developer agent without changing the approval and persistence model.
+
+The interface follows Linear's interaction principles—speed, restrained hierarchy, dense work lists, focused details, and keyboard navigation—while retaining UniversalL2 branding and original desktop components.
 
 ## Development
 
