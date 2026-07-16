@@ -12,6 +12,16 @@ class TaskReviewState(StrEnum):
     DEFERRED = "deferred"
 
 
+class AgentWorkState(StrEnum):
+    UNASSIGNED = "unassigned"
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    VALIDATION = "validation"
+    AWAITING_APPROVAL = "awaiting_approval"
+    COMPLETE = "complete"
+    BLOCKED = "blocked"
+
+
 @dataclass(frozen=True)
 class Evidence:
     path: str
@@ -52,6 +62,10 @@ class ProposedTask:
     affected_paths: tuple[str, ...]
     acceptance_criteria: tuple[str, ...]
     review_state: str = TaskReviewState.PROPOSED
+    agent_state: str = AgentWorkState.UNASSIGNED
+    assigned_at: str | None = None
+    agent_updated_at: str | None = None
+    agent_activity: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +114,7 @@ class ScanReport:
                     "source_finding_ids": tuple(item["source_finding_ids"]),
                     "affected_paths": tuple(item["affected_paths"]),
                     "acceptance_criteria": tuple(item["acceptance_criteria"]),
+                    "agent_activity": tuple(item.get("agent_activity", ())),
                 }
             )
             for item in payload["proposed_tasks"]

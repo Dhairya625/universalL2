@@ -15,8 +15,11 @@ from PySide6.QtWidgets import (
     QTextBrowser, QVBoxLayout, QWidget,
 )
 
-from automate_core import ScanReport, TaskReviewState, scan_repository
-from automate_core.models import Finding
+from automate_core import (
+    AgentWorkState, ScanReport, TaskReviewState, WorkflowError, handoff_to_developer,
+    next_agent_actions, scan_repository, transition_agent_work,
+)
+from automate_core.models import Finding, ProposedTask
 from automate_desktop.storage import HistoryStore
 
 
@@ -281,15 +284,16 @@ class FindingsPage(QWidget):
 
 class TasksPage(QWidget):
     decision_changed = Signal(str, str)
+    handoff_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 26, 28, 26)
         outer.setSpacing(16)
-        outer.addWidget(title_block("Proposed tasks", "Keep humans in control by accepting, rejecting, or deferring generated work."))
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["Priority", "Task", "Affected paths", "Complexity", "Decision"])
+        outer.addWidget(title_block("Suggestion workspace", "Review analysis-backed suggestions and explicitly approve work before it reaches the developer agent."))
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["Priority", "Suggestion", "Affected paths", "Complexity", "Review", "Developer"])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -298,9 +302,35 @@ class TasksPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        outer.addWidget(self.table, 1)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.itemSelectionChanged.connect(self._show_selected)
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.addWidget(self.table)
+        detail_frame, detail_layout = card()
+        detail_top = QHBoxLayout()
+        detail_title = QLabel("Suggestion details")
+        detail_title.setObjectName("SectionTitle")
+        detail_top.addWidget(detail_title)
+        detail_top.addStretch()
+        self.handoff_button = QPushButton("Send to developer agent")
+        self.handoff_button.setObjectName("Primary")
+        self.handoff_button.setEnabled(False)
+        self.handoff_button.clicked.connect(self._request_handoff)
+        detail_top.addWidget(self.handoff_button)
+        detail_layout.addLayout(detail_top)
+        self.detail = QTextBrowser()
+        self.detail.setObjectName("DetailPanel")
+        self.detail.setHtml("<p style='color:#64748B'>Select a suggestion to inspect its objective and required actions.</p>")
+        detail_layout.addWidget(self.detail)
+        splitter.addWidget(detail_frame)
+        splitter.setSizes([430, 240])
+        outer.addWidget(splitter, 1)
+        self.tasks: list[ProposedTask] = []
+        self.current_task_id: str | None = None
 
     def show_report(self, report: ScanReport) -> None:
+        selected_id = self.current_task_id
+        self.tasks = report.proposed_tasks
         self.table.setRowCount(len(report.proposed_tasks))
         for row, task in enumerate(report.proposed_tasks):
             priority = QTableWidgetItem(task.priority.upper())
@@ -317,9 +347,177 @@ class TasksPage(QWidget):
             values = [state.value for state in TaskReviewState]
             decision.addItems([value.capitalize() for value in values])
             decision.setCurrentIndex(values.index(str(task.review_state)))
+            decision.setEnabled(str(task.agent_state) == AgentWorkState.UNASSIGNED)
             decision.currentTextChanged.connect(lambda text, task_id=task.id: self.decision_changed.emit(task_id, text.lower()))
             self.table.setCellWidget(row, 4, decision)
+            agent_state = QTableWidgetItem(str(task.agent_state).replace("_", " ").title())
+            agent_state.setForeground(QColor("#0F766E" if str(task.agent_state) != AgentWorkState.UNASSIGNED else "#94A3B8"))
+            self.table.setItem(row, 5, agent_state)
             self.table.setRowHeight(row, 70)
+            if task.id == selected_id:
+                self.table.selectRow(row)
+        if self.table.rowCount() and not self.table.selectedItems():
+            self.table.selectRow(0)
+
+    def _selected_task(self) -> ProposedTask | None:
+        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        if not rows:
+            return None
+        item = self.table.item(rows[0].row(), 1)
+        task_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return next((task for task in self.tasks if task.id == task_id), None)
+
+    def _show_selected(self) -> None:
+        task = self._selected_task()
+        if not task:
+            self.current_task_id = None
+            self.handoff_button.setEnabled(False)
+            return
+        self.current_task_id = task.id
+        paths = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in task.affected_paths)
+        criteria = "".join(f"<li>{html.escape(item)}</li>" for item in task.acceptance_criteria)
+        self.detail.setHtml(f"""
+        <style>body {{ font-family: -apple-system, Segoe UI, sans-serif; color:#172033; }}
+        h2 {{ font-size:14px; margin-top:16px; }} .meta {{ color:#64748B; }}
+        code {{ background:#F1F5F9; padding:2px 5px; border-radius:4px; }}</style>
+        <b>{html.escape(task.title)}</b><p class='meta'>{html.escape(task.objective)}</p>
+        <h2>Required actions</h2><ol>{criteria}</ol><h2>Affected paths</h2><ul>{paths}</ul>
+        """)
+        can_handoff = str(task.review_state) == TaskReviewState.ACCEPTED and str(task.agent_state) == AgentWorkState.UNASSIGNED
+        self.handoff_button.setEnabled(can_handoff)
+        self.handoff_button.setText("Send to developer agent" if str(task.agent_state) == AgentWorkState.UNASSIGNED else "Already in developer workflow")
+
+    def _request_handoff(self) -> None:
+        task = self._selected_task()
+        if task:
+            self.handoff_requested.emit(task.id)
+
+
+class DeveloperAgentPage(QWidget):
+    state_requested = Signal(str, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(28, 26, 28, 26)
+        outer.setSpacing(16)
+        outer.addWidget(title_block("Developer agent", "Track approved work, required actions, validation, and human approval in one operational panel."))
+
+        notice = QLabel("Execution adapter: not connected  ·  This panel tracks controlled handoffs and status; it does not modify repository files.")
+        notice.setObjectName("Notice")
+        notice.setWordWrap(True)
+        outer.addWidget(notice)
+
+        metrics = QHBoxLayout()
+        self.metric_labels: dict[str, QLabel] = {}
+        for key, label in (("queued", "Queued"), ("active", "Active work"), ("approval", "Awaiting approval"), ("complete", "Complete")):
+            metric, metric_layout = card()
+            caption = QLabel(label)
+            caption.setObjectName("CardLabel")
+            value = QLabel("0")
+            value.setObjectName("MetricValue")
+            self.metric_labels[key] = value
+            metric_layout.addWidget(caption)
+            metric_layout.addWidget(value)
+            metrics.addWidget(metric)
+        outer.addLayout(metrics)
+
+        splitter = QSplitter()
+        self.queue = QListWidget()
+        self.queue.setMinimumWidth(330)
+        self.queue.setWordWrap(True)
+        self.queue.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.queue.currentItemChanged.connect(self._show_work)
+        splitter.addWidget(self.queue)
+        right, right_layout = card()
+        self.detail = QTextBrowser()
+        self.detail.setObjectName("DetailPanel")
+        right_layout.addWidget(self.detail, 1)
+        self.action_bar = QWidget()
+        self.action_layout = QHBoxLayout(self.action_bar)
+        self.action_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self.action_bar)
+        splitter.addWidget(right)
+        splitter.setSizes([360, 700])
+        outer.addWidget(splitter, 1)
+        self.tasks: list[ProposedTask] = []
+        self.current_task_id: str | None = None
+        self._show_empty()
+
+    def show_report(self, report: ScanReport) -> None:
+        selected_id = self.current_task_id
+        self.tasks = [task for task in report.proposed_tasks if str(task.agent_state) != AgentWorkState.UNASSIGNED]
+        self.queue.clear()
+        for task in self.tasks:
+            state = str(task.agent_state).replace("_", " ").upper()
+            item = QListWidgetItem(f"{state}\n{task.title}")
+            item.setData(Qt.ItemDataRole.UserRole, task.id)
+            self.queue.addItem(item)
+            if task.id == selected_id:
+                self.queue.setCurrentItem(item)
+        self.metric_labels["queued"].setText(str(sum(str(task.agent_state) == AgentWorkState.QUEUED for task in self.tasks)))
+        self.metric_labels["active"].setText(str(sum(str(task.agent_state) in {AgentWorkState.IN_PROGRESS, AgentWorkState.VALIDATION, AgentWorkState.BLOCKED} for task in self.tasks)))
+        self.metric_labels["approval"].setText(str(sum(str(task.agent_state) == AgentWorkState.AWAITING_APPROVAL for task in self.tasks)))
+        self.metric_labels["complete"].setText(str(sum(str(task.agent_state) == AgentWorkState.COMPLETE for task in self.tasks)))
+        if self.queue.count() and self.queue.currentRow() < 0:
+            self.queue.setCurrentRow(0)
+        elif not self.queue.count():
+            self._show_empty()
+
+    def _show_work(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if not current:
+            self._show_empty()
+            return
+        task_id = current.data(Qt.ItemDataRole.UserRole)
+        task = next((entry for entry in self.tasks if entry.id == task_id), None)
+        if not task:
+            return
+        self.current_task_id = task.id
+        criteria = "".join(f"<li>{html.escape(item)}</li>" for item in task.acceptance_criteria)
+        paths = "".join(f"<li><code>{html.escape(path)}</code></li>" for path in task.affected_paths)
+        activity = "".join(f"<li>{html.escape(self._format_activity(event))}</li>" for event in reversed(task.agent_activity)) or "<li>No activity recorded.</li>"
+        state = str(task.agent_state).replace("_", " ").title()
+        self.detail.setHtml(f"""
+        <style>body {{ font-family:-apple-system, Segoe UI, sans-serif; color:#172033; padding:8px; }}
+        .state {{ color:#0F766E; font-weight:700; font-size:11px; letter-spacing:1px; }}
+        h1 {{ font-size:23px; margin:5px 0; }} h2 {{ font-size:14px; margin-top:20px; }}
+        .muted {{ color:#64748B; }} code {{ background:#F1F5F9; padding:2px 5px; border-radius:4px; }}</style>
+        <div class='state'>{html.escape(state.upper())}</div><h1>{html.escape(task.title)}</h1>
+        <p class='muted'>{html.escape(task.objective)}</p><h2>Required actions</h2><ol>{criteria}</ol>
+        <h2>Affected files</h2><ul>{paths}</ul><h2>Activity</h2><ul>{activity}</ul>
+        """)
+        self._set_actions(task)
+
+    def _set_actions(self, task: ProposedTask) -> None:
+        self._clear_actions()
+        self.action_layout.addStretch()
+        for label, target in next_agent_actions(task):
+            button = QPushButton(label)
+            button.setObjectName("Primary" if target in {AgentWorkState.IN_PROGRESS, AgentWorkState.VALIDATION, AgentWorkState.AWAITING_APPROVAL, AgentWorkState.COMPLETE} else "Secondary")
+            button.clicked.connect(lambda checked=False, task_id=task.id, state=str(target): self.state_requested.emit(task_id, state))
+            self.action_layout.addWidget(button)
+
+    def _clear_actions(self) -> None:
+        while self.action_layout.count():
+            item = self.action_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def _show_empty(self) -> None:
+        self.current_task_id = None
+        self.detail.setHtml("<div style='font-family:sans-serif;color:#64748B;padding:30px'><h2>Developer queue is empty</h2><p>Accept a suggestion and send it here when it is ready for controlled development.</p></div>")
+        self._clear_actions()
+
+    @staticmethod
+    def _format_activity(event: str) -> str:
+        timestamp, separator, message = event.partition(" | ")
+        if not separator:
+            return event
+        try:
+            rendered = datetime.fromisoformat(timestamp).astimezone().strftime("%d %b %Y, %H:%M")
+        except ValueError:
+            rendered = timestamp
+        return f"{rendered} — {message}"
 
 
 class HistoryPage(QWidget):
@@ -408,13 +606,13 @@ class MainWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(220)
+        sidebar.setFixedWidth(244)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(16, 22, 16, 18)
         side.setSpacing(8)
-        brand = QLabel("Automate")
+        brand = QLabel("UniversalL2")
         brand.setObjectName("Brand")
-        subtitle = QLabel("L2 REPOSITORY INTELLIGENCE")
+        subtitle = QLabel("ENGINEERING CONTROL ROOM")
         subtitle.setObjectName("BrandSub")
         side.addWidget(brand)
         side.addWidget(subtitle)
@@ -424,20 +622,23 @@ class MainWindow(QMainWindow):
         self.overview = OverviewPage()
         self.findings_page = FindingsPage()
         self.tasks_page = TasksPage()
+        self.developer_page = DeveloperAgentPage()
         self.history_page = HistoryPage()
-        for page in (self.overview, self.findings_page, self.tasks_page, self.history_page):
+        for page in (self.overview, self.findings_page, self.tasks_page, self.developer_page, self.history_page):
             self.pages.addWidget(page)
 
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for index, (label, symbol) in enumerate((("Overview", "▦"), ("Findings", "⚠"), ("Proposed tasks", "☑"), ("Scan history", "◴"))):
+        self.nav_buttons: list[QPushButton] = []
+        for index, (label, symbol) in enumerate((("Repository", "▦"), ("Analysis evidence", "◇"), ("Suggestions", "☑"), ("Developer agent", "⌘"), ("Activity", "◴"))):
             button = QPushButton(f"{symbol}   {label}")
             button.setObjectName("NavButton")
             button.setCheckable(True)
             if index == 0:
                 button.setChecked(True)
-            button.clicked.connect(lambda checked=False, page_index=index: self.pages.setCurrentIndex(page_index))
+            button.clicked.connect(lambda checked=False, page_index=index: self._navigate(page_index))
             group.addButton(button)
+            self.nav_buttons.append(button)
             side.addWidget(button)
         side.addStretch()
         settings = QPushButton("⚙   Settings")
@@ -462,8 +663,15 @@ class MainWindow(QMainWindow):
         self.overview.scan_requested.connect(self.start_scan)
         self.overview.export_requested.connect(self.export_report)
         self.tasks_page.decision_changed.connect(self.update_task_decision)
+        self.tasks_page.handoff_requested.connect(self.handoff_task)
+        self.developer_page.state_requested.connect(self.update_agent_state)
         self.history_page.report_requested.connect(self.open_history_report)
         self.setStatusBar(QStatusBar())
+
+    def _navigate(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        if 0 <= index < len(self.nav_buttons):
+            self.nav_buttons[index].setChecked(True)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -487,7 +695,7 @@ class MainWindow(QMainWindow):
             self.repository_path = directory
             self.current_report = None
             self.overview.set_repository(directory)
-            self.pages.setCurrentIndex(0)
+            self._navigate(0)
             self.statusBar().showMessage(f"Selected {directory}")
 
     def start_scan(self) -> None:
@@ -523,6 +731,7 @@ class MainWindow(QMainWindow):
         self.overview.show_report(report)
         self.findings_page.show_report(report)
         self.tasks_page.show_report(report)
+        self.developer_page.show_report(report)
         self.history_page.set_reports(self.history)
 
     def update_task_decision(self, task_id: str, state: str) -> None:
@@ -532,18 +741,57 @@ class MainWindow(QMainWindow):
         if not task:
             return
         task.review_state = state
+        self._persist_current_report()
+        self.overview.show_report(self.current_report)
+        self.tasks_page.show_report(self.current_report)
+        self.statusBar().showMessage(f"Task decision updated to {state}")
+
+    def handoff_task(self, task_id: str) -> None:
+        if not self.current_report:
+            return
+        task = next((item for item in self.current_report.proposed_tasks if item.id == task_id), None)
+        if not task:
+            return
+        try:
+            handoff_to_developer(task)
+        except WorkflowError as exc:
+            QMessageBox.warning(self, "Handoff unavailable", str(exc))
+            return
+        self._persist_current_report()
+        self.tasks_page.show_report(self.current_report)
+        self.developer_page.show_report(self.current_report)
+        self._navigate(3)
+        self.statusBar().showMessage("Approved suggestion added to the developer queue")
+
+    def update_agent_state(self, task_id: str, state: str) -> None:
+        if not self.current_report:
+            return
+        task = next((item for item in self.current_report.proposed_tasks if item.id == task_id), None)
+        if not task:
+            return
+        try:
+            transition_agent_work(task, state)
+        except WorkflowError as exc:
+            QMessageBox.warning(self, "Workflow transition unavailable", str(exc))
+            return
+        self._persist_current_report()
+        self.tasks_page.show_report(self.current_report)
+        self.developer_page.show_report(self.current_report)
+        self.statusBar().showMessage(f"Developer workflow updated to {state.replace('_', ' ')}")
+
+    def _persist_current_report(self) -> None:
+        if not self.current_report:
+            return
         self.store.save(self.current_report)
         for index, report in enumerate(self.history):
             if report.scan_id == self.current_report.scan_id:
                 self.history[index] = self.current_report
                 break
-        self.overview.show_report(self.current_report)
-        self.statusBar().showMessage(f"Task decision updated to {state}")
 
     def open_history_report(self, report: ScanReport) -> None:
         self.current_report = report
         self._show_report(report)
-        self.pages.setCurrentIndex(0)
+        self._navigate(0)
 
     def export_report(self) -> None:
         if not self.current_report:
